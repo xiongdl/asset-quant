@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(
+    cd "$(dirname "${BASH_SOURCE[0]}")"
+    pwd
+)"
+WORKFLOW="$SCRIPT_DIR/git-workflow"
+TEST_PARENT="${TMPDIR:-/tmp}"
+TEST_PARENT="${TEST_PARENT%/}"
+TEST_ROOT="$(mktemp -d "$TEST_PARENT/git-workflow-tests.XXXXXX")"
+
+cleanup() {
+    [[ -n "$TEST_ROOT" ]] || return
+
+    case "$TEST_ROOT" in
+        "$TEST_PARENT"/git-workflow-tests.*)
+            rm -rf -- "$TEST_ROOT"
+            ;;
+        *)
+            printf 'Refusing unsafe cleanup: %s\n' "$TEST_ROOT" >&2
+            return 1
+            ;;
+    esac
+}
+
+trap cleanup EXIT
+
+init_repo() {
+    local repo="$1"
+
+    mkdir -p "$repo"
+    git -C "$repo" init -b dev
+    git -C "$repo" config user.name Codex-Test
+    git -C "$repo" config user.email codex-test@example.invalid
+    cat >"$repo/.gitignore" <<'EOF'
+docs/initiatives/*/task_beg.json
+docs/initiatives/*/task_end.json
+EOF
+    git -C "$repo" add .gitignore
+    git -C "$repo" commit -m 'test: ignore workflow snapshots'
+}
+
+test_happy_path() {
+    local repo="$TEST_ROOT/happy"
+
+    init_repo "$repo"
+    git -C "$repo" commit --allow-empty -m baseline
+
+    (
+        cd "$repo"
+        "$WORKFLOW" status >/dev/null
+        local exclude_before
+        exclude_before="$(git hash-object .git/info/exclude)"
+        "$WORKFLOW" create happy-task
+        test "$(git hash-object .git/info/exclude)" = "$exclude_before"
+        if grep -Fq 'docs/initiatives/happy-task/task_beg.json' .git/info/exclude; then
+            printf 'Task snapshot unexpectedly added to git exclude\n' >&2
+            return 1
+        fi
+        touch policy.md notes.md
+        "$WORKFLOW" commit -m "test: policy"
+        test "$(git ls-tree --name-only HEAD -- policy.md notes.md | wc -l | tr -d ' ')" -eq 2
+        "$WORKFLOW" merge happy-task
+        "$WORKFLOW" delete happy-task
+        "$WORKFLOW" status >/dev/null
+    )
+}
+
+test_unmerged_task_can_be_deleted() {
+    local repo="$TEST_ROOT/delete-unmerged"
+
+    init_repo "$repo"
+    git -C "$repo" commit --allow-empty -m baseline
+
+    (
+        cd "$repo"
+        "$WORKFLOW" create discard-task
+        touch discarded.md
+        "$WORKFLOW" commit -m "test: discarded task"
+        "$WORKFLOW" delete discard-task
+
+        test "$(git branch --show-current)" = dev
+        if git show-ref --verify --quiet refs/heads/codex/discard-task; then
+            printf 'Expected unmerged task branch deletion\n' >&2
+            return 1
+        fi
+    )
+}
+
+test_submodule_parent_commit_retry() {
+    local child_source="$TEST_ROOT/child-source"
+    local parent="$TEST_ROOT/parent"
+    local parent_hook
+
+    init_repo "$child_source"
+    touch "$child_source/child.txt"
+    git -C "$child_source" add child.txt
+    git -C "$child_source" commit -m baseline
+
+    init_repo "$parent"
+    git -C "$parent" \
+        -c protocol.file.allow=always \
+        submodule add "$child_source" child
+    git -C "$parent" commit -m baseline
+
+    (
+        cd "$parent"
+        "$WORKFLOW" create submodule-task
+        touch child/change.txt
+
+        parent_hook="$parent/.git/hooks/pre-commit"
+        printf '#!/bin/sh\nexit 1\n' >"$parent_hook"
+        chmod +x "$parent_hook"
+
+        if "$WORKFLOW" commit -m "test: child retry"
+        then
+            printf 'Expected parent commit-hook failure\n' >&2
+            return 1
+        fi
+
+        test -z "$(git diff --cached --name-only)"
+        test "$(
+            git -C child rev-list \
+                --count \
+                dev..codex/submodule-task
+        )" -eq 1
+
+        rm -- "$parent_hook"
+
+        "$WORKFLOW" commit -m "test: child retry"
+        "$WORKFLOW" merge submodule-task
+        "$WORKFLOW" delete submodule-task
+    )
+}
+
+test_happy_path
+test_unmerged_task_can_be_deleted
+test_submodule_parent_commit_retry
+
+printf 'OK git-workflow tests\n'

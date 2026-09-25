@@ -1,0 +1,1689 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROGRAM="${0##*/}"
+
+die() {
+    printf 'ERROR %s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage:
+  $PROGRAM status
+  $PROGRAM pull
+  $PROGRAM push
+  $PROGRAM create <task>
+  $PROGRAM commit -m <message>
+  $PROGRAM merge <task>
+  $PROGRAM delete <task>
+EOF
+}
+
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1 ||
+        die "missing-command command=$1"
+}
+
+cleanup_files() {
+    local file
+
+    for file in "$@"; do
+        [[ -n "${file:-}" ]] || continue
+        rm -f -- "$file"
+    done
+}
+
+root_dir() {
+    git rev-parse --show-toplevel
+}
+
+git_repo() {
+    local repo="$1"
+    shift
+    git -C "$repo" "$@"
+}
+
+repo_abs() {
+    local root="$1"
+    local path="$2"
+
+    if [[ "$path" == "." ]]; then
+        printf '%s\n' "$root"
+    else
+        printf '%s/%s\n' "$root" "$path"
+    fi
+}
+
+repo_depth() {
+    local path="$1"
+
+    if [[ "$path" == "." ]]; then
+        printf '0\n'
+    else
+        awk -F/ '{print NF}' <<<"$path"
+    fi
+}
+
+current_branch() {
+    git_repo "$1" symbolic-ref --quiet --short HEAD
+}
+
+current_commit() {
+    git_repo "$1" rev-parse --verify 'HEAD^{commit}'
+}
+
+resolve_commit() {
+    git_repo "$1" rev-parse --verify "$2^{commit}"
+}
+
+branch_exists() {
+    git_repo "$1" show-ref \
+        --verify \
+        --quiet \
+        "refs/heads/$2"
+}
+
+task_branch() {
+    local task="$1"
+
+    [[ -n "$task" ]] ||
+        die "empty-task-name"
+
+    printf 'codex/%s\n' "$task"
+}
+
+validate_task() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
+        die "invalid-task task=$1"
+}
+
+validate_task_branch() {
+    local task_branch_name="$1"
+
+    [[ -n "$task_branch_name" ]] ||
+        die "empty-task-branch"
+
+    git check-ref-format \
+        --branch \
+        "$task_branch_name" \
+        >/dev/null 2>&1 ||
+        die "invalid-task-branch branch=$task_branch_name"
+}
+
+initiative_dir() {
+    printf '%s/docs/initiatives/%s\n' "$1" "$2"
+}
+
+beg_file() {
+    printf '%s/task_beg.json\n' \
+        "$(initiative_dir "$1" "$2")"
+}
+
+end_file() {
+    printf '%s/task_end.json\n' \
+        "$(initiative_dir "$1" "$2")"
+}
+
+#
+# Emit:
+#
+# prefix<TAB>path
+#
+# prefix:
+#   =  normal
+#   -  uninitialized
+#   +  checked-out HEAD differs from parent gitlink
+#   U  conflict
+#
+list_submodules() {
+    local root="$1"
+    local output
+
+    output="$(
+        git_repo "$root" submodule status --recursive
+    )" || die "cannot-read-submodules"
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+
+        local prefix="${line:0:1}"
+        local rest="${line:1}"
+        local path
+
+        path="$(awk '{print $2}' <<<"$rest")"
+
+        [[ -n "$path" ]] ||
+            die "cannot-parse-submodule line=$line"
+
+        [[ "$prefix" == " " ]] && prefix="="
+
+        printf '%s\t%s\n' "$prefix" "$path"
+    done <<<"$output"
+}
+
+#
+# Emit initialized repositories only.
+#
+list_repositories() {
+    local root="$1"
+
+    printf '.\n'
+
+    while IFS=$'\t' read -r prefix path; do
+        [[ "$prefix" != "-" ]] || continue
+        printf '%s\n' "$path"
+    done < <(list_submodules "$root")
+}
+
+#
+# Inventory format:
+#
+# path<TAB>depth<TAB>managed<TAB>checkout<TAB>branch<TAB>commit
+#
+# Rules:
+#   root:
+#     must be attached
+#     managed=true
+#
+#   attached submodule:
+#     managed=true
+#
+#   detached submodule:
+#     managed=false
+#     dependency-only
+#
+collect_inventory() {
+    local root="$1"
+    local out="$2"
+    local errors="$3"
+
+    : >"$out"
+    : >"$errors"
+
+    while IFS=$'\t' read -r prefix path; do
+        case "$prefix" in
+            -)
+                printf \
+                    'UNINITIALIZED_SUBMODULE repo=%s\n' \
+                    "$path" >>"$errors"
+                ;;
+            U)
+                printf \
+                    'SUBMODULE_CONFLICT repo=%s\n' \
+                    "$path" >>"$errors"
+                ;;
+        esac
+    done < <(list_submodules "$root")
+
+    while IFS= read -r path; do
+        local repo
+        local depth
+        local current_branch_name
+        local commit
+        local managed
+        local checkout
+
+        repo="$(repo_abs "$root" "$path")"
+        depth="$(repo_depth "$path")"
+
+        commit="$(
+            current_commit "$repo" 2>/dev/null || true
+        )"
+
+        if [[ -z "$commit" ]]; then
+            printf \
+                'INVALID_HEAD repo=%s\n' \
+                "$path" >>"$errors"
+            continue
+        fi
+
+        current_branch_name="$(
+            current_branch "$repo" 2>/dev/null || true
+        )"
+
+        if [[ "$path" == "." ]]; then
+            if [[ -z "$current_branch_name" ]]; then
+                printf \
+                    'DETACHED_ROOT_HEAD repo=.\n' \
+                    >>"$errors"
+                continue
+            fi
+
+            managed=true
+            checkout=attached
+
+        elif [[ -n "$current_branch_name" ]]; then
+            managed=true
+            checkout=attached
+
+        else
+            managed=false
+            checkout=detached
+            current_branch_name=""
+        fi
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$path" \
+            "$depth" \
+            "$managed" \
+            "$checkout" \
+            "$current_branch_name" \
+            "$commit" >>"$out"
+
+    done < <(list_repositories "$root")
+}
+
+collect_clean_status() {
+    local root="$1"
+    local inventory="$2"
+    local errors="$3"
+
+    collect_inventory \
+        "$root" \
+        "$inventory" \
+        "$errors"
+
+    while IFS=$'\t' read -r \
+        path depth managed checkout current_branch_name commit
+    do
+        local repo
+        local status
+
+        repo="$(repo_abs "$root" "$path")"
+
+        status="$(
+            git_repo "$repo" status \
+                --porcelain=v1 \
+                --untracked-files=all
+        )" || {
+            printf \
+                'STATUS_FAILED repo=%s\n' \
+                "$path" >>"$errors"
+            continue
+        }
+
+        if [[ -n "$status" ]]; then
+            printf \
+                'DIRTY_REPO repo=%s managed=%s\n' \
+                "$path" \
+                "$managed" >>"$errors"
+
+            while IFS= read -r changed; do
+                printf '  %s\n' "$changed" >>"$errors"
+            done <<<"$status"
+        fi
+
+    done <"$inventory"
+
+    while IFS=$'\t' read -r prefix path; do
+        if [[ "$prefix" == "+" ]]; then
+            printf \
+                'SUBMODULE_COMMIT_MISMATCH repo=%s\n' \
+                "$path" >>"$errors"
+        fi
+    done < <(list_submodules "$root")
+}
+
+require_clean_project() {
+    local root="$1"
+    local inventory="$2"
+    local errors
+
+    errors="$(mktemp)"
+
+    collect_clean_status \
+        "$root" \
+        "$inventory" \
+        "$errors"
+
+    if [[ -s "$errors" ]]; then
+        printf 'ERROR project-not-clean\n' >&2
+        cat "$errors" >&2
+        cleanup_files "$errors"
+        return 1
+    fi
+
+    cleanup_files "$errors"
+}
+
+managed_inventory() {
+    local inventory="$1"
+    awk -F'\t' '$3 == "true"' "$inventory"
+}
+
+#
+# Commit preflight:
+#
+# managed repos:
+#   - must all be on same codex/<task> branch
+#   - index must initially be empty
+#
+# unmanaged detached dependencies:
+#   - must remain completely untouched
+#
+collect_commit_state() {
+    local root="$1"
+    local inventory="$2"
+    local errors="$3"
+
+    collect_inventory \
+        "$root" \
+        "$inventory" \
+        "$errors"
+
+    local expected_task_branch_name=""
+
+    while IFS=$'\t' read -r \
+        path depth managed checkout current_branch_name commit
+    do
+        local repo
+        repo="$(repo_abs "$root" "$path")"
+
+        if [[ "$managed" == "false" ]]; then
+            local status
+
+            status="$(
+                git_repo "$repo" status \
+                    --porcelain=v1 \
+                    --untracked-files=all
+            )"
+
+            if [[ -n "$status" ]]; then
+                printf \
+                    'UNMANAGED_SUBMODULE_MODIFIED repo=%s\n' \
+                    "$path" >>"$errors"
+
+                while IFS= read -r changed; do
+                    printf '  %s\n' "$changed" >>"$errors"
+                done <<<"$status"
+            fi
+
+            continue
+        fi
+
+        if [[ -z "$expected_task_branch_name" ]]; then
+            expected_task_branch_name="$current_branch_name"
+        elif [[ "$current_branch_name" != "$expected_task_branch_name" ]]; then
+            printf \
+                'BRANCH_MISMATCH repo=%s expected=%s actual=%s\n' \
+                "$path" \
+                "$expected_task_branch_name" \
+                "$current_branch_name" >>"$errors"
+        fi
+
+        if [[ "$current_branch_name" != codex/* ]]; then
+            printf \
+                'NOT_TASK_BRANCH repo=%s branch=%s\n' \
+                "$path" \
+                "$current_branch_name" >>"$errors"
+        fi
+
+        if ! git_repo "$repo" diff \
+            --cached \
+            --quiet \
+            --
+        then
+            printf \
+                'INDEX_NOT_EMPTY repo=%s\n' \
+                "$path" >>"$errors"
+        fi
+
+    done <"$inventory"
+
+    #
+    # "+" is allowed during commit only for managed submodules,
+    # because it may represent a child commit waiting to propagate
+    # to its parent gitlink.
+    #
+    while IFS=$'\t' read -r prefix path; do
+        [[ "$prefix" == "+" ]] || continue
+
+        local managed
+
+        managed="$(
+            awk -F'\t' \
+                -v p="$path" \
+                '$1 == p {print $3}' \
+                "$inventory"
+        )"
+
+        if [[ "$managed" == "false" ]]; then
+            printf \
+                'UNMANAGED_SUBMODULE_COMMIT_MISMATCH repo=%s\n' \
+                "$path" >>"$errors"
+        fi
+
+    done < <(list_submodules "$root")
+}
+
+write_status_json() {
+    local inventory="$1"
+    local output="$2"
+
+    python3 - "$inventory" "$output" <<'PY'
+import json
+import sys
+
+src, dst = sys.argv[1:]
+
+repositories = []
+
+with open(src, encoding="utf-8") as f:
+    for line in f:
+        (
+            path,
+            depth,
+            managed,
+            checkout,
+            branch,
+            commit,
+        ) = line.rstrip("\n").split("\t")
+
+        repositories.append({
+            "path": path,
+            "depth": int(depth),
+            "managed": managed == "true",
+            "checkout": checkout,
+            "branch": branch or None,
+            "commit": commit,
+        })
+
+data = {
+    "version": 1,
+    "root": ".",
+    "repositories": repositories,
+}
+
+if dst == "-":
+    f = sys.stdout
+else:
+    f = open(dst, "w", encoding="utf-8")
+
+try:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+finally:
+    if f is not sys.stdout:
+        f.close()
+PY
+}
+
+#
+# Task snapshots contain managed repos only.
+#
+write_task_json() {
+    local inventory="$1"
+    local output="$2"
+    local task="$3"
+    local task_branch_name="$4"
+
+    python3 - \
+        "$inventory" \
+        "$output" \
+        "$task" \
+        "$task_branch_name" <<'PY'
+import json
+import sys
+
+src, dst, task, task_branch = sys.argv[1:]
+
+repositories = []
+
+with open(src, encoding="utf-8") as f:
+    for line in f:
+        (
+            path,
+            depth,
+            managed,
+            checkout,
+            branch,
+            commit,
+        ) = line.rstrip("\n").split("\t")
+
+        if managed != "true":
+            continue
+
+        repositories.append({
+            "path": path,
+            "depth": int(depth),
+            "branch": branch,
+            "commit": commit,
+        })
+
+data = {
+    "version": 1,
+    "task": task,
+    "task_branch": task_branch,
+    "repositories": repositories,
+}
+
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+}
+
+cmd_status() {
+    local root
+    local inventory
+    local errors
+
+    root="$(root_dir)"
+    inventory="$(mktemp)"
+    errors="$(mktemp)"
+
+    collect_clean_status \
+        "$root" \
+        "$inventory" \
+        "$errors"
+
+    if [[ -s "$errors" ]]; then
+        printf 'ERROR project-not-clean\n' >&2
+        cat "$errors" >&2
+
+        cleanup_files "$inventory" "$errors"
+        return 1
+    fi
+
+    write_status_json \
+        "$inventory" \
+        -
+
+    cleanup_files "$inventory" "$errors"
+}
+
+cmd_create() {
+    local task="$1"
+    validate_task "$task"
+
+    local root
+    local task_branch_name
+    local inventory
+    local beg
+    local problems
+
+    root="$(root_dir)"
+    task_branch_name="$(task_branch "$task")"
+    validate_task_branch "$task_branch_name"
+
+    inventory="$(mktemp)"
+    beg="$(beg_file "$root" "$task")"
+    problems="$(mktemp)"
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files "$inventory" "$problems"
+        return 1
+    fi
+
+    : >"$problems"
+
+    #
+    # Prevalidate all managed repos before mutation.
+    #
+    while IFS=$'\t' read -r \
+        path depth managed checkout original_branch original_commit
+    do
+        [[ "$managed" == "true" ]] || continue
+
+        local repo
+        repo="$(repo_abs "$root" "$path")"
+
+        if branch_exists "$repo" "$task_branch_name"; then
+            printf \
+                'TASK_BRANCH_EXISTS repo=%s branch=%s\n' \
+                "$path" \
+                "$task_branch_name" >>"$problems"
+        fi
+
+    done <"$inventory"
+
+    if [[ -s "$problems" ]]; then
+        cat "$problems" >&2
+
+        cleanup_files "$inventory" "$problems"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$beg")"
+
+    if [[ -e "$beg" ]]; then
+        cleanup_files "$inventory" "$problems"
+        die "task-begin-already-exists file=$beg"
+    fi
+
+    #
+    # task_beg freezes original branch + original commit
+    # for managed repos.
+    #
+    write_task_json \
+        "$inventory" \
+        "$beg" \
+        "$task" \
+        "$task_branch_name"
+
+    #
+    # Mutation begins.
+    #
+    while IFS=$'\t' read -r \
+        path depth managed checkout original_branch original_commit
+    do
+        [[ "$managed" == "true" ]] || continue
+
+        local repo
+        local actual_branch
+        local actual_commit
+
+        repo="$(repo_abs "$root" "$path")"
+
+        actual_branch="$(
+            current_branch "$repo" 2>/dev/null || true
+        )"
+
+        actual_commit="$(
+            current_commit "$repo" 2>/dev/null || true
+        )"
+
+        [[ "$actual_branch" == "$original_branch" ]] || {
+            cleanup_files "$inventory" "$problems"
+            die \
+                "branch-moved repo=$path expected=$original_branch actual=$actual_branch"
+        }
+
+        [[ "$actual_commit" == "$original_commit" ]] || {
+            cleanup_files "$inventory" "$problems"
+            die \
+                "head-moved repo=$path expected=$original_commit actual=$actual_commit"
+        }
+
+        printf \
+            '\n==> CREATE repo=%s branch=%s from=%s\n' \
+            "$path" \
+            "$task_branch_name" \
+            "$original_commit"
+
+        git_repo "$repo" switch \
+            --create \
+            "$task_branch_name" \
+            "$original_commit"
+
+    done <"$inventory"
+
+    local managed_count
+
+    managed_count="$(
+        managed_inventory "$inventory" |
+            wc -l |
+            tr -d ' '
+    )"
+
+    printf \
+        '\nOK create task=%s branch=%s managed=%s snapshot=%s\n' \
+        "$task" \
+        "$task_branch_name" \
+        "$managed_count" \
+        "${beg#"$root"/}"
+
+    cleanup_files "$inventory" "$problems"
+}
+
+cmd_pull() {
+    local root
+    local inventory
+    local problems
+
+    root="$(root_dir)"
+    inventory="$(mktemp)"
+    problems="$(mktemp)"
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files "$inventory" "$problems"
+        return 1
+    fi
+
+    : >"$problems"
+
+    #
+    # Prevalidate upstreams.
+    #
+    while IFS=$'\t' read -r \
+        path depth managed checkout current_branch_name commit
+    do
+        [[ "$managed" == "true" ]] || continue
+
+        local repo
+        repo="$(repo_abs "$root" "$path")"
+
+        if ! git_repo "$repo" rev-parse \
+            --abbrev-ref \
+            --symbolic-full-name \
+            '@{upstream}' \
+            >/dev/null 2>&1
+        then
+            printf \
+                'NO_UPSTREAM repo=%s branch=%s\n' \
+                "$path" \
+                "$current_branch_name" >>"$problems"
+        fi
+
+    done <"$inventory"
+
+    if [[ -s "$problems" ]]; then
+        cat "$problems" >&2
+
+        cleanup_files "$inventory" "$problems"
+        return 1
+    fi
+
+    #
+    # Managed repos only, deepest first.
+    #
+    while IFS=$'\t' read -r \
+        path depth managed checkout current_branch_name commit
+    do
+        local repo
+        local upstream
+
+        repo="$(repo_abs "$root" "$path")"
+
+        upstream="$(
+            git_repo "$repo" rev-parse \
+                --abbrev-ref \
+                --symbolic-full-name \
+                '@{upstream}'
+        )"
+
+        printf \
+            '\n==> PULL repo=%s branch=%s upstream=%s\n' \
+            "$path" \
+            "$current_branch_name" \
+            "$upstream"
+
+        git_repo "$repo" pull \
+            --ff-only \
+            --prune
+
+    done < <(
+        managed_inventory "$inventory" |
+            sort -t$'\t' -k2,2nr
+    )
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files "$inventory" "$problems"
+        return 1
+    fi
+
+    printf '\nOK pull\n'
+
+    cleanup_files "$inventory" "$problems"
+}
+
+cmd_push() {
+    local root
+    local inventory
+
+    root="$(root_dir)"
+    inventory="$(mktemp)"
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files "$inventory"
+        return 1
+    fi
+
+    #
+    # Managed repos only, deepest first.
+    #
+    while IFS=$'\t' read -r \
+        path depth managed checkout current_branch_name commit
+    do
+        local repo
+        local upstream
+
+        repo="$(repo_abs "$root" "$path")"
+
+        upstream="$(
+            git_repo "$repo" rev-parse \
+                --abbrev-ref \
+                --symbolic-full-name \
+                '@{upstream}' \
+                2>/dev/null || true
+        )"
+
+        if [[ -z "$upstream" ]]; then
+            git_repo "$repo" remote \
+                get-url origin >/dev/null 2>&1 || {
+                    cleanup_files "$inventory"
+                    die "no-upstream-and-no-origin repo=$path"
+                }
+
+            printf \
+                '\n==> PUSH repo=%s branch=%s upstream=origin/%s [set-upstream]\n' \
+                "$path" \
+                "$current_branch_name" \
+                "$current_branch_name"
+
+            git_repo "$repo" push \
+                --set-upstream \
+                origin \
+                "$current_branch_name"
+        else
+            printf \
+                '\n==> PUSH repo=%s branch=%s upstream=%s\n' \
+                "$path" \
+                "$current_branch_name" \
+                "$upstream"
+
+            git_repo "$repo" push
+        fi
+
+    done < <(
+        managed_inventory "$inventory" |
+            sort -t$'\t' -k2,2nr
+    )
+
+    printf '\nOK push\n'
+
+    cleanup_files "$inventory"
+}
+
+clear_commit_index() {
+    local repo="$1"
+
+    # Commit preflight requires an initially empty index, so restoring the
+    # complete index to HEAD cannot discard pre-existing staged user work.
+    # Working-tree and untracked content are intentionally preserved.
+    git_repo "$repo" restore \
+        --staged \
+        -- .
+}
+
+cmd_commit() {
+    local message=""
+
+    while (($#)); do
+        case "$1" in
+            -m|--message)
+                shift
+
+                (($#)) ||
+                    die "missing-commit-message"
+
+                message="$1"
+                shift
+                ;;
+
+            *)
+                die \
+                    "commit-does-not-accept-paths argument=$1"
+                ;;
+        esac
+    done
+
+    [[ -n "$message" ]] ||
+        die "commit-message-required"
+
+    local root
+    local inventory
+    local errors
+
+    root="$(root_dir)"
+    inventory="$(mktemp)"
+    errors="$(mktemp)"
+
+    collect_commit_state \
+        "$root" \
+        "$inventory" \
+        "$errors"
+
+    if [[ -s "$errors" ]]; then
+        printf \
+            'ERROR commit-preflight-failed\n' \
+            >&2
+
+        cat "$errors" >&2
+
+        cleanup_files \
+            "$inventory" \
+            "$errors"
+
+        return 1
+    fi
+
+    local task_branch_name
+
+    task_branch_name="$(
+        managed_inventory "$inventory" |
+            awk -F'\t' 'NR == 1 {print $5}'
+    )"
+
+    [[ "$task_branch_name" == codex/* ]] || {
+        cleanup_files \
+            "$inventory" \
+            "$errors"
+
+        die "not-on-task-branch branch=$task_branch_name"
+    }
+
+    local committed_count=0
+
+    #
+    # Deepest managed repo first.
+    #
+    while IFS=$'\t' read -r \
+        path depth managed checkout current_branch_name commit
+    do
+        local repo
+
+        repo="$(repo_abs "$root" "$path")"
+
+        printf \
+            '\n==> COMMIT repo=%s branch=%s\n' \
+            "$path" \
+            "$current_branch_name"
+
+        #
+        # The project was clean when the task branch was created, so all
+        # Git-visible changes on that branch belong to the current task.
+        #
+        git_repo "$repo" add -A -- .
+
+        if git_repo "$repo" diff \
+            --cached \
+            --quiet \
+            --
+        then
+            printf '    no changes\n'
+            continue
+        fi
+
+        if ! git_repo "$repo" diff --cached --check; then
+            clear_commit_index "$repo"
+            return 1
+        fi
+
+        if ! git_repo "$repo" commit \
+                -m "$message"
+        then
+            clear_commit_index "$repo"
+            return 1
+        fi
+
+        printf \
+            '    commit=%s\n' \
+            "$(current_commit "$repo")"
+
+        ((committed_count += 1))
+
+    done < <(
+        managed_inventory "$inventory" |
+            sort -t$'\t' -k2,2nr
+    )
+
+    if (( committed_count == 0 )); then
+        cleanup_files \
+            "$inventory" \
+            "$errors"
+
+        die "nothing-to-commit"
+    fi
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files \
+            "$inventory" \
+            "$errors"
+        return 1
+    fi
+
+    printf \
+        '\nOK commit branch=%s repos=%d\n' \
+        "$task_branch_name" \
+        "$committed_count"
+
+    cleanup_files \
+        "$inventory" \
+        "$errors"
+}
+
+#
+# Merge plan:
+#
+# depth<TAB>path<TAB>original_branch<TAB>original_commit<TAB>task_commit
+#
+snapshot_plan() {
+    local beg="$1"
+    local end="$2"
+
+    python3 - "$beg" "$end" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    beg = json.load(f)
+
+with open(sys.argv[2], encoding="utf-8") as f:
+    end = json.load(f)
+
+if beg.get("version") != 1 or end.get("version") != 1:
+    raise SystemExit("snapshot-version-mismatch")
+
+if beg.get("task") != end.get("task"):
+    raise SystemExit("snapshot-task-mismatch")
+
+if beg.get("task_branch") != end.get("task_branch"):
+    raise SystemExit("snapshot-task-branch-mismatch")
+
+before = {
+    item["path"]: item
+    for item in beg["repositories"]
+}
+
+after = {
+    item["path"]: item
+    for item in end["repositories"]
+}
+
+if set(before) != set(after):
+    raise SystemExit("managed-repository-set-mismatch")
+
+for path, b in before.items():
+    a = after[path]
+
+    print(
+        b["depth"],
+        path,
+        b["branch"],
+        b["commit"],
+        a["commit"],
+        sep="\t",
+    )
+PY
+}
+
+cmd_merge() {
+    local task="$1"
+    validate_task "$task"
+
+    local root
+    local task_branch_name
+    local beg
+    local end
+    local inventory
+    local problems
+    local plan
+
+    root="$(root_dir)"
+    task_branch_name="$(task_branch "$task")"
+    validate_task_branch "$task_branch_name"
+
+    beg="$(beg_file "$root" "$task")"
+    end="$(end_file "$root" "$task")"
+
+    inventory="$(mktemp)"
+    problems="$(mktemp)"
+    plan="$(mktemp)"
+
+    if [[ ! -f "$beg" ]]; then
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$plan"
+
+        die "missing-task-beg file=$beg"
+    fi
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$plan"
+
+        return 1
+    fi
+
+    : >"$problems"
+
+    #
+    # All currently managed repos must still be on task branch.
+    #
+    while IFS=$'\t' read -r \
+        path depth managed checkout current_branch_name commit
+    do
+        [[ "$managed" == "true" ]] || continue
+
+        if [[ "$current_branch_name" != "$task_branch_name" ]]; then
+            printf \
+                'EXPECTED_TASK_BRANCH repo=%s expected=%s actual=%s\n' \
+                "$path" \
+                "$task_branch_name" \
+                "$current_branch_name" >>"$problems"
+        fi
+
+    done <"$inventory"
+
+    if [[ -s "$problems" ]]; then
+        cat "$problems" >&2
+
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$plan"
+
+        return 1
+    fi
+
+    #
+    # Freeze merge-right boundary.
+    #
+    if [[ ! -e "$end" ]]; then
+        write_task_json \
+            "$inventory" \
+            "$end" \
+            "$task" \
+            "$task_branch_name"
+    fi
+
+    snapshot_plan \
+        "$beg" \
+        "$end" |
+        sort -t$'\t' -k1,1nr >"$plan"
+
+    #
+    # Prevalidate complete merge plan before mutation.
+    #
+    while IFS=$'\t' read -r \
+        depth \
+        path \
+        original_branch \
+        original_commit \
+        task_commit
+    do
+        local repo
+        local actual_original
+        local actual_task
+
+        repo="$(repo_abs "$root" "$path")"
+
+        actual_original="$(
+            resolve_commit \
+                "$repo" \
+                "$original_branch"
+        )"
+
+        [[ "$actual_original" == "$original_commit" ]] || {
+            cleanup_files \
+                "$inventory" \
+                "$problems" \
+                "$plan"
+
+            die \
+                "original-branch-moved repo=$path expected=$original_commit actual=$actual_original"
+        }
+
+        actual_task="$(
+            resolve_commit \
+                "$repo" \
+                "$task_branch_name"
+        )"
+
+        [[ "$actual_task" == "$task_commit" ]] || {
+            cleanup_files \
+                "$inventory" \
+                "$problems" \
+                "$plan"
+
+            die \
+                "task-branch-moved repo=$path expected=$task_commit actual=$actual_task"
+        }
+
+        if [[ "$original_commit" != "$task_commit" ]]; then
+            git_repo "$repo" merge-base \
+                --is-ancestor \
+                "$original_commit" \
+                "$task_commit" || {
+                    cleanup_files \
+                        "$inventory" \
+                        "$problems" \
+                        "$plan"
+
+                    die "not-fast-forwardable repo=$path"
+                }
+        fi
+
+    done <"$plan"
+
+    local changed=0
+    local unchanged=0
+
+    #
+    # Deepest managed repo first.
+    #
+    while IFS=$'\t' read -r \
+        depth \
+        path \
+        original_branch \
+        original_commit \
+        task_commit
+    do
+        local repo
+
+        repo="$(repo_abs "$root" "$path")"
+
+        [[ "$(current_branch "$repo")" == "$task_branch_name" ]] || {
+            cleanup_files \
+                "$inventory" \
+                "$problems" \
+                "$plan"
+
+            die "unexpected-current-branch repo=$path"
+        }
+
+        [[ "$(current_commit "$repo")" == "$task_commit" ]] || {
+            cleanup_files \
+                "$inventory" \
+                "$problems" \
+                "$plan"
+
+            die "unexpected-current-head repo=$path"
+        }
+
+        printf \
+            '\n==> MERGE repo=%s task=%s original=%s\n' \
+            "$path" \
+            "$task_branch_name" \
+            "$original_branch"
+
+        #
+        # Every managed repo, changed or unchanged, is restored
+        # to its original branch before its parent is integrated.
+        #
+        git_repo "$repo" switch \
+            "$original_branch"
+
+        [[ "$(current_commit "$repo")" == "$original_commit" ]] || {
+            cleanup_files \
+                "$inventory" \
+                "$problems" \
+                "$plan"
+
+            die "original-head-mismatch repo=$path"
+        }
+
+        if [[ "$original_commit" == "$task_commit" ]]; then
+            printf '    unchanged; no merge\n'
+            ((unchanged += 1))
+            continue
+        fi
+
+        git_repo "$repo" merge \
+            --ff-only \
+            "$task_commit"
+
+        [[ "$(current_commit "$repo")" == "$task_commit" ]] || {
+            cleanup_files \
+                "$inventory" \
+                "$problems" \
+                "$plan"
+
+            die "unexpected-merge-result repo=$path"
+        }
+
+        ((changed += 1))
+
+    done <"$plan"
+
+    #
+    # Restore dependency-only submodules according to the now
+    # integrated parent gitlinks.
+    #
+    git_repo "$root" submodule update \
+        --init \
+        --recursive
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$plan"
+
+        return 1
+    fi
+
+    printf \
+        '\nOK merge task=%s changed=%d unchanged=%d snapshot=%s\n' \
+        "$task" \
+        "$changed" \
+        "$unchanged" \
+        "${end#"$root"/}"
+
+    cleanup_files \
+        "$inventory" \
+        "$problems" \
+        "$plan"
+}
+
+#
+# delete only depends on task_beg.json.
+#
+# Supported flows:
+#
+#   create -> delete
+#
+#   create -> commit -> delete
+#
+#   create -> commit -> merge -> delete
+#
+# delete restores the recorded original branches, but DOES NOT
+# reset those branches back to their original commits.
+#
+# Therefore merge results are preserved.
+#
+cmd_delete() {
+    local task="$1"
+    validate_task "$task"
+
+    local root
+    local task_branch_name
+    local beg
+    local inventory
+    local problems
+    local delete_plan
+
+    root="$(root_dir)"
+    task_branch_name="$(task_branch "$task")"
+    validate_task_branch "$task_branch_name"
+
+    beg="$(beg_file "$root" "$task")"
+
+    inventory="$(mktemp)"
+    problems="$(mktemp)"
+    delete_plan="$(mktemp)"
+
+    if [[ ! -f "$beg" ]]; then
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$delete_plan"
+
+        die "missing-task-beg file=$beg"
+    fi
+
+    #
+    # No branch switching/deleting is allowed with dirty worktrees.
+    #
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$delete_plan"
+
+        return 1
+    fi
+
+    #
+    # Build restore/delete plan from task_beg only.
+    #
+    python3 - "$beg" >"$delete_plan" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+
+if data.get("version") != 1:
+    raise SystemExit("snapshot-version-mismatch")
+
+if not data.get("task"):
+    raise SystemExit("snapshot-task-missing")
+
+if not data.get("task_branch"):
+    raise SystemExit("snapshot-task-branch-missing")
+
+for repo in data.get("repositories", []):
+    print(
+        repo["depth"],
+        repo["path"],
+        repo["branch"],
+        repo["commit"],
+        sep="\t",
+    )
+PY
+
+    : >"$problems"
+
+    #
+    # Prevalidate all original branches before mutation.
+    #
+    while IFS=$'\t' read -r \
+        depth \
+        path \
+        original_branch \
+        original_commit
+    do
+        local repo
+
+        repo="$(repo_abs "$root" "$path")"
+
+        if ! branch_exists "$repo" "$original_branch"; then
+            printf \
+                'ORIGINAL_BRANCH_MISSING repo=%s branch=%s\n' \
+                "$path" \
+                "$original_branch" >>"$problems"
+        fi
+
+    done <"$delete_plan"
+
+    if [[ -s "$problems" ]]; then
+        printf 'ERROR delete-preflight-failed\n' >&2
+        cat "$problems" >&2
+
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$delete_plan"
+
+        return 1
+    fi
+
+    #
+    # Restore every managed repo to its original branch.
+    #
+    # Deepest first so children are no longer on task branch
+    # before their parents are restored.
+    #
+    while IFS=$'\t' read -r \
+        depth \
+        path \
+        original_branch \
+        original_commit
+    do
+        local repo
+        local current_branch_name
+
+        repo="$(repo_abs "$root" "$path")"
+
+        current_branch_name="$(
+            current_branch "$repo" 2>/dev/null || true
+        )"
+
+        if [[ "$current_branch_name" == "$original_branch" ]]; then
+            printf \
+                '\n==> RESTORE repo=%s branch=%s [already]\n' \
+                "$path" \
+                "$original_branch"
+
+            continue
+        fi
+
+        printf \
+            '\n==> RESTORE repo=%s branch=%s\n' \
+            "$path" \
+            "$original_branch"
+
+        git_repo "$repo" switch \
+            "$original_branch"
+
+    done < <(
+        sort -t$'\t' -k1,1nr "$delete_plan"
+    )
+
+    #
+    # Restore recursive submodule checkouts according to the
+    # active original parent trees.
+    #
+    git_repo "$root" submodule update \
+        --init \
+        --recursive
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$delete_plan"
+
+        return 1
+    fi
+
+    local deleted=0
+    local skipped=0
+
+    #
+    # Delete task branches deepest first.
+    #
+    # -D is intentional: invoking delete explicitly authorizes abandoning
+    # an unmerged task branch after the clean-state preflight succeeds.
+    #
+    while IFS=$'\t' read -r \
+        depth \
+        path \
+        original_branch \
+        original_commit
+    do
+        local repo
+
+        repo="$(repo_abs "$root" "$path")"
+
+        if ! branch_exists "$repo" "$task_branch_name"; then
+            printf \
+                '\n==> DELETE repo=%s branch=%s [already absent]\n' \
+                "$path" \
+                "$task_branch_name"
+
+            ((skipped += 1))
+            continue
+        fi
+
+        printf \
+            '\n==> DELETE repo=%s branch=%s\n' \
+            "$path" \
+            "$task_branch_name"
+
+        git_repo "$repo" branch \
+            -D \
+            "$task_branch_name"
+
+        ((deleted += 1))
+
+    done < <(
+        sort -t$'\t' -k1,1nr "$delete_plan"
+    )
+
+    if ! require_clean_project "$root" "$inventory"; then
+        cleanup_files \
+            "$inventory" \
+            "$problems" \
+            "$delete_plan"
+
+        return 1
+    fi
+
+    local restored_count
+
+    restored_count="$(
+        wc -l <"$delete_plan" |
+            tr -d ' '
+    )"
+
+    printf \
+        '\nOK delete task=%s restored=%s deleted=%d already_absent=%d\n' \
+        "$task" \
+        "$restored_count" \
+        "$deleted" \
+        "$skipped"
+
+    cleanup_files \
+        "$inventory" \
+        "$problems" \
+        "$delete_plan"
+}
+
+main() {
+    require_cmd git
+    require_cmd python3
+
+    (($# > 0)) || {
+        usage
+        exit 2
+    }
+
+    local command="$1"
+    shift
+
+    case "$command" in
+        status)
+            (($# == 0)) ||
+                die "status-takes-no-arguments"
+
+            cmd_status
+            ;;
+
+        pull)
+            (($# == 0)) ||
+                die "pull-takes-no-arguments"
+
+            cmd_pull
+            ;;
+
+        push)
+            (($# == 0)) ||
+                die "push-takes-no-arguments"
+
+            cmd_push
+            ;;
+
+        create)
+            (($# == 1)) ||
+                die "usage: $PROGRAM create <task>"
+
+            cmd_create "$1"
+            ;;
+
+        commit)
+            cmd_commit "$@"
+            ;;
+
+        merge)
+            (($# == 1)) ||
+                die "usage: $PROGRAM merge <task>"
+
+            cmd_merge "$1"
+            ;;
+
+        delete)
+            (($# == 1)) ||
+                die "usage: $PROGRAM delete <task>"
+
+            cmd_delete "$1"
+            ;;
+
+        -h|--help|help)
+            usage
+            ;;
+
+        *)
+            die "unknown-command command=$command"
+            ;;
+    esac
+}
+
+main "$@"

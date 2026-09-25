@@ -1,0 +1,41 @@
+prefix_rule(
+    pattern = ["./.agents/custom/scripts/git-workflow", "status"],
+    decision = "allow",
+    justification = "Read repository workflow status.",
+)
+
+prefix_rule(
+    pattern = ["./.agents/custom/scripts/git-workflow", "create"],
+    decision = "allow",
+    justification = "Create the Codex task branch and snapshot.",
+)
+
+prefix_rule(
+    pattern = ["./.agents/custom/scripts/git-workflow", "commit"],
+    decision = "allow",
+    justification = "Commit the current Codex task changes.",
+)
+
+prefix_rule(
+    pattern = ["./.agents/custom/scripts/git-workflow", "merge"],
+    decision = "prompt",
+    justification = "Merge the task branch into the original branch.",
+)
+
+prefix_rule(
+    pattern = ["./.agents/custom/scripts/git-workflow", "pull"],
+    decision = "prompt",
+    justification = "Pull changes from the remote repository.",
+)
+
+prefix_rule(
+    pattern = ["./.agents/custom/scripts/git-workflow", "push"],
+    decision = "prompt",
+    justification = "Push local changes to the remote repository.",
+)
+
+prefix_rule(
+    pattern = ["./.agents/custom/scripts/git-workflow", "delete"],
+    decision = "prompt",
+    justification = "Restore branches and delete the task branch.",
+)

@@ -1,0 +1,14 @@
+name = "default"
+description = "Execution agent for Build, Fix, Verify, Re-verify, and verified commits."
+
+model = "gpt-6-luna"
+model_reasoning_effort = "high"
+sandbox_mode = "workspace-write"
+
+developer_instructions = """
+Execute delegated implementation and verification work like an owner against
+the approved artifacts.
+Prioritize correctness, minimal scope, reproducible verification, and preserving
+unrelated work.
+Do not expand scope, invent requirements, or advance the lifecycle.
+"""
