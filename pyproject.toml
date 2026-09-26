@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asset-quant"
+version = "0.1.0"
+description = "Modular index portfolio backtesting tools"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2,<4",
+    "openpyxl>=3.1,<4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

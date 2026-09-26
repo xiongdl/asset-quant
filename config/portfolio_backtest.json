@@ -1,0 +1,26 @@
+{
+  "data": {
+    "sources": {
+      "480080": "data/raw/480080_perf_20121231_20260807.xls",
+      "480081": "data/raw/480081_perf_20121231_20260807.xls"
+    }
+  },
+  "costs": {
+    "commission_rate_per_side": 0.0003,
+    "slippage_rate_per_side": 0.0005,
+    "stamp_duty_schedule": [
+      {
+        "effective_from": "1900-01-01",
+        "effective_through": "2023-08-27",
+        "rate_on_sales": 0.001
+      },
+      {
+        "effective_from": "2023-08-28",
+        "effective_through": null,
+        "rate_on_sales": 0.0005
+      }
+    ]
+  },
+  "risk_free_rate_annual": 0.0,
+  "output_dir": "outputs"
+}
