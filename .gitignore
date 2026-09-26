@@ -11,6 +11,11 @@ __pycache__/
 
 # Environment
 .envs
+.venvs/
+.venv/
+
+# Generated backtest artifacts
+outputs/
 
 # VSCode
 .vscode/
