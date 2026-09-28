@@ -50,6 +50,11 @@ def _build_cost_model(config: dict[str, Any]) -> TransactionCostModel:
     if not isinstance(schedule, list) or not schedule:
         raise ValueError("Configuration field 'costs.stamp_duty_schedule' must be a non-empty list")
     try:
+        for item in schedule:
+            if isinstance(item, dict) and isinstance(item.get("rate_on_sales"), bool):
+                raise ValueError(
+                    "stamp-duty rate_on_sales must be a numeric decimal, not a boolean"
+                )
         rates = [
             StampDutyRate(
                 effective_from=date.fromisoformat(item["effective_from"]),

@@ -61,7 +61,12 @@ class TransactionCostModel:
 
     @staticmethod
     def _validate_rate(name: str, rate: float) -> float:
-        if not isinstance(rate, (int, float)) or not isfinite(rate) or rate < 0:
+        if (
+            isinstance(rate, bool)
+            or not isinstance(rate, (int, float))
+            or not isfinite(rate)
+            or rate < 0
+        ):
             raise ValueError(f"{name.capitalize()} rate must be a finite non-negative decimal")
         return float(rate)
 

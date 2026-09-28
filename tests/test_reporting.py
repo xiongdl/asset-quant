@@ -87,6 +87,27 @@ class ReportingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "(?i)commission"):
                 run_configured_backtest(config_path)
 
+    def test_boolean_cost_rates_from_json_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = self._fixture_config(root)
+            original = json.loads(config_path.read_text(encoding="utf-8"))
+            rate_paths = (
+                ("commission_rate_per_side", None, "commission"),
+                ("slippage_rate_per_side", None, "slippage"),
+                (None, "rate_on_sales", "stamp duty"),
+            )
+            for cost_key, schedule_key, label in rate_paths:
+                with self.subTest(rate=label):
+                    config = json.loads(json.dumps(original))
+                    if schedule_key is None:
+                        config["costs"][cost_key] = True
+                    else:
+                        config["costs"]["stamp_duty_schedule"][0][schedule_key] = True
+                    config_path.write_text(json.dumps(config), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "(?i)" + label.replace(" ", "[- ]")):
+                        run_configured_backtest(config_path)
+
     def test_report_writer_accepts_empty_results_and_writes_header(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)

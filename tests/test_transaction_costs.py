@@ -42,6 +42,20 @@ class TransactionCostTests(unittest.TestCase):
         )
         self.assertEqual(result.stamp_duty, 0)
 
+    def test_boolean_cost_rates_are_rejected(self):
+        for commission, slippage, duty, label in (
+            (True, 0, 0, "commission"),
+            (0, True, 0, "slippage"),
+            (0, 0, True, "stamp duty"),
+        ):
+            with self.subTest(rate=label):
+                with self.assertRaisesRegex(ValueError, "(?i)" + label.replace(" ", "[- ]")):
+                    TransactionCostModel(
+                        commission_rate=commission,
+                        slippage_rate=slippage,
+                        stamp_duty_schedule=[StampDutyRate(date(2000, 1, 1), duty)],
+                    )
+
     def test_invalid_turnover_and_rates_are_rejected(self):
         with self.assertRaises(ValueError):
             self.costs.calculate(
