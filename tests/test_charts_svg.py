@@ -37,6 +37,9 @@ class ChartsSvgTests(unittest.TestCase):
         ns = {"svg": "http://www.w3.org/2000/svg"}
         panels = heatmap.findall(".//svg:g[@class='heatmap-panel']", ns)
         self.assertEqual(len(panels), 3)
+        background = heatmap.find("svg:rect[@class='background']", ns)
+        self.assertIsNotNone(background)
+        self.assertEqual(background.attrib["fill"], "#ffffff")
         for panel in panels:
             cells = [
                 cell for cell in panel.findall(".//svg:rect", ns)
@@ -61,6 +64,17 @@ class ChartsSvgTests(unittest.TestCase):
                 self.assertAlmostEqual(
                     float(cell.attrib["data-value"]), float(source[key][expected_metric])
                 )
+        for current, following in zip(panels, panels[1:]):
+            current_cells = [
+                cell for cell in current.findall(".//svg:rect", ns)
+                if "heatmap-cell" in cell.attrib.get("class", "").split()
+            ]
+            current_bottom = max(
+                float(cell.attrib["y"]) + float(cell.attrib["height"])
+                for cell in current_cells
+            )
+            following_title = following.find("svg:text[@class='panel-title']", ns)
+            self.assertLess(current_bottom, float(following_title.attrib["y"]))
 
         points = scatter.findall(".//svg:circle[@class='case-point']", ns)
         self.assertEqual(len(points), 55)
@@ -88,7 +102,9 @@ class ChartsSvgTests(unittest.TestCase):
                 self.assertEqual(root.tag, "{http://www.w3.org/2000/svg}svg")
                 self.assertTrue(root.find("svg:title", ns).text)
                 self.assertTrue(root.find("svg:desc", ns).text)
-                serialized = path.read_text(encoding="utf-8")
+                background = root.find("svg:rect[@class='background']", ns)
+                self.assertIsNotNone(background)
+                self.assertEqual(background.attrib["fill"], "#ffffff")
         rows[0]["rebalance_period"] = "周<&期"
         escaped_svg = _risk_return_svg(rows)
         ET.fromstring(escaped_svg)

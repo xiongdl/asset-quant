@@ -54,12 +54,13 @@ def _interpolate_color(position: float, *, higher_is_better: bool = True) -> str
 
 
 def _heatmap_svg(results: Sequence[Mapping[str, Any]]) -> str:
-    width, height = 1080, 880
-    table_x, table_y = 250, 86
-    cell_width, cell_height = 148, 23
-    panel_height = 270
+    width, height = 1080, 940
+    table_x, table_y = 250, 76
+    cell_width, cell_height = 148, 20
+    panel_height = 306
     pieces = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
+        f'<rect class="background" x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
         "<title id=\"title\">480080 / 480081 策略指标热力图</title>",
         "<desc id=\"desc\">按 480080 配置比例和再平衡周期展示 55 种组合的年化收益率、夏普比率和最大回撤。颜色由红到绿代表数值由低到高。</desc>",
         "<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#182230}.panel-title{font-size:21px;font-weight:700}.axis{font-size:14px}.cell-label{font-size:13px;font-weight:600}.grid{stroke:#fff;stroke-width:2}</style>",
@@ -76,10 +77,10 @@ def _heatmap_svg(results: Sequence[Mapping[str, Any]]) -> str:
         for column, period in enumerate(_PERIOD_ORDER):
             x = table_x + column * cell_width + cell_width / 2
             label = _PERIOD_LABELS[period]
-            pieces.append(f'<text class="axis" text-anchor="middle" x="{x}" y="{panel_y + 74}">{_escape(label)}</text>')
+            pieces.append(f'<text class="axis" text-anchor="middle" x="{x}" y="{panel_y + 70}">{_escape(label)}</text>')
         for row_index, weight in enumerate(range(100, -1, -10)):
             y = panel_y + table_y + row_index * cell_height
-            pieces.append(f'<text class="axis" text-anchor="end" x="{table_x - 12}" y="{y + 16}">{weight}%</text>')
+            pieces.append(f'<text class="axis" text-anchor="end" x="{table_x - 12}" y="{y + 14}">{weight}%</text>')
             for column, period in enumerate(_PERIOD_ORDER):
                 data = grid[(float(weight), period)]
                 value = float(data[metric])
@@ -88,7 +89,7 @@ def _heatmap_svg(results: Sequence[Mapping[str, Any]]) -> str:
                 x = table_x + column * cell_width
                 display = f"{value * 100:.1f}%" if unit == "%" else f"{value:.2f}"
                 pieces.append(
-                    f'<g><rect class="heatmap-cell grid" x="{x}" y="{y}" width="{cell_width}" height="{cell_height}" fill="{fill}" data-weight="{weight}" data-period="{_escape(period)}" data-value="{value:.12g}" data-metric="{_escape(metric)}"/><text class="cell-label" text-anchor="middle" x="{x + cell_width / 2}" y="{y + 16}">{display}</text></g>'
+                    f'<g><rect class="heatmap-cell grid" x="{x}" y="{y}" width="{cell_width}" height="{cell_height}" fill="{fill}" data-weight="{weight}" data-period="{_escape(period)}" data-value="{value:.12g}" data-metric="{_escape(metric)}"/><text class="cell-label" text-anchor="middle" x="{x + cell_width / 2}" y="{y + 14}">{display}</text></g>'
                 )
         pieces.append("</g>")
     pieces.append("</svg>")
@@ -124,6 +125,7 @@ def _risk_return_svg(results: Sequence[Mapping[str, Any]]) -> str:
 
     pieces = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
+        f'<rect class="background" x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
         "<title id=\"title\">年化收益与最大回撤对比</title>",
         "<desc id=\"desc\">55 种组合的年化收益率和最大回撤散点图，颜色区分再平衡周期，并标注三项指标领跑组合。</desc>",
         "<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#182230}.heading{font-size:21px;font-weight:700}.axis{font-size:14px}.legend{font-size:14px}.leader-label{font-size:14px;font-weight:600}.gridline{stroke:#e1e6ed;stroke-width:1}.case-point{stroke:#fff;stroke-width:1.5}</style>",
