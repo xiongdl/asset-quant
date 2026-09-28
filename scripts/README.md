@@ -90,9 +90,11 @@ initial capital and target allocation; the first return is earned on the next
 common trading date. A rebalance at a period's last available close affects
 the following trading day's return.
 
-The report and CSV include the 480080/480081 weights, rebalance period, common
-start and end dates, configured commission/slippage/tax rates, buy and sell
-notional, and summed cost components. The six built-in metrics are:
+The report summarizes metric-leading configurations, shared start and end
+dates, assumptions, and metric definitions. The CSV includes the full
+480080/480081 weights and rebalance-period grid, dates, configured
+commission/slippage/tax rates, buy and sell notional, summed cost components,
+and the six built-in metrics:
 
 - `annualized_return`: geometric CAGR over elapsed calendar years, using
   365.2425 days per year and including initial buy costs relative to initial
@@ -115,10 +117,15 @@ notional, and summed cost components. The six built-in metrics are:
 
 Each invocation creates a new run directory and writes:
 
-- `report.md`: assumptions, data range, metric definitions, and a readable
-  comparison of all 55 cases.
+- `report.md`: a Chinese overview with concise metric leaders, assumptions,
+  data range, and metric definitions. It embeds the two comparison charts.
 - `metrics.csv`: exactly one row per allocation and rebalance-period pair,
   including all metric and cost fields.
+- `performance_heatmaps.svg`: heatmaps for annualized return, Sharpe ratio, and
+  maximum drawdown across the full 11-allocation × 5-period grid.
+- `risk_return.svg`: an annualized-return versus maximum-drawdown scatter plot
+  for all 55 configurations, with rebalance periods distinguished by color
+  and the three metric leaders annotated.
 
 The command reads the configured workbooks and JSON file and writes only the
 new run artifacts under the selected output directory. It does not modify the

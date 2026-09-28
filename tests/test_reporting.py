@@ -61,15 +61,29 @@ class ReportingTests(unittest.TestCase):
             self.assertIn("maximum_drawdown_recovered", rows[0])
             self.assertIn("sharpe_ratio", rows[0])
             self.assertIn("commission", rows[0])
+            self.assertIn("buy_notional", rows[0])
+            self.assertIn("sell_notional", rows[0])
+            self.assertIn("transaction_cost", rows[0])
             self.assertIn("slippage", rows[0])
             self.assertIn("stamp_duty", rows[0])
             self.assertIn("0.0003", rows[0]["commission_rate_per_side"])
             self.assertIn("effective_through", rows[0]["stamp_duty_schedule"])
             report = (run_dir / "report.md").read_text(encoding="utf-8")
             self.assertIn("55", report)
-            self.assertIn("does not select a universally best", report)
-            self.assertIn("index", report.lower())
-            self.assertIn("population standard deviation", report)
+            self.assertTrue(report.startswith("# 480080 / 480081 组合回测概览"))
+            self.assertIn("最高年化收益", report)
+            self.assertIn("最高夏普", report)
+            self.assertIn("最浅最大回撤", report)
+            self.assertIn("不构成投资建议", report)
+            self.assertIn("![配置与周期指标热力图](performance_heatmaps.svg)", report)
+            self.assertIn("![收益与回撤散点图](risk_return.svg)", report)
+            self.assertIn("报告中不逐行展开", report)
+            self.assertTrue((run_dir / "performance_heatmaps.svg").is_file())
+            self.assertTrue((run_dir / "risk_return.svg").is_file())
+            self.assertIn("历史代理数据", report)
+            self.assertIn("假设", report)
+            self.assertIn("总体标准差", report)
+            self.assertNotIn("| rebalance_period |", report)
 
     def test_missing_source_and_invalid_rate_have_actionable_errors(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -117,6 +131,9 @@ class ReportingTests(unittest.TestCase):
             )
             self.assertTrue((output / "report.md").is_file())
             self.assertEqual((output / "metrics.csv").read_text(encoding="utf-8").strip(), "")
+            report = (output / "report.md").read_text(encoding="utf-8")
+            self.assertNotIn("performance_heatmaps.svg", report)
+            self.assertNotIn("risk_return.svg", report)
 
 
 if __name__ == "__main__":
