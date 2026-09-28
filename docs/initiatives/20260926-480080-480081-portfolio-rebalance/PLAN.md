@@ -2,7 +2,7 @@
 
 ## Overview
 
-Implement the approved CLI backtest in six task units grouped into four Default execution checkpoints. The flow starts with validated daily index data, evaluates the periodic strategy through a reusable strategy contract and turnover-based cost model, computes extensible metrics, then exports a report and CSV results. The raw source workbooks remain unchanged.
+Implement the approved CLI backtest and report-visualization update in nine task units grouped into five Default execution checkpoints. Checkpoints 1–4 are complete through commit `ab8385c`. Checkpoint 5 restructures the report around concise Chinese findings and dependency-free SVG charts. The raw source workbooks remain unchanged.
 
 ## Architecture decisions
 
@@ -13,6 +13,8 @@ Implement the approved CLI backtest in six task units grouped into four Default 
 - Apply close-date rebalances after that date's market return, with target weights active on the next common trading day. Charge initial buy-side costs and rebalance costs; apply stamp duty only to sales using the configured effective-date schedule.
 - Compute metrics after costs through a registry, separate from the strategy and engine. This provides a clear extension point for new metrics and strategies.
 - Generate a run-specific `report.md` and `metrics.csv` under `outputs/`; do not commit generated outputs or edit raw data.
+- Generate two standalone SVGs from the metric grid: a three-panel heatmap for return/Sharpe/drawdown and a risk-return scatter for all cases. Embed both from the Chinese Markdown report.
+- Keep chart generation in a small reporting module using the standard library; avoid a new chart dependency and keep all 55 detailed rows in CSV.
 
 ## Task sequence and checkpoints
 
@@ -43,6 +45,13 @@ Implement the approved CLI backtest in six task units grouped into four Default 
 
 **Exit criteria:** A new user can create the environment, configure assumptions, run the CLI, understand the outputs, and see the verified 55-case result.
 
+### Checkpoint 5: Readable report and charts
+
+- Task 8: Build accessible SVG charts for metric heatmaps and risk-return comparisons.
+- Task 9: Rework report composition into a Chinese overview with metric leaders and embedded charts, then regenerate and visually inspect the full-data report.
+
+**Exit criteria:** The report opens with a concise summary, charts expose the full 11×5 comparison grid, full-detail results remain in CSV, and generated SVGs render without clipping or unreadable labels.
+
 ## Verification approach
 
 - Each task runs its focused checks before its task-level commit.
@@ -50,6 +59,7 @@ Implement the approved CLI backtest in six task units grouped into four Default 
 - Checkpoint 2 checks calendar boundaries, known two-asset return paths, rebalance timing, initial turnover, side-specific fees, and the stamp-duty effective date.
 - Checkpoint 3 checks metric calculations on small known series and the CLI output row count, allocation grid, period set, columns, and assumption labels.
 - Checkpoint 4 runs the complete documented command on the repository files and checks the generated report and CSV. Generated outputs stay out of Git.
+- Checkpoint 5 checks chart value mapping and SVG labels, regenerates the full-data outputs, and visually inspects both figures and the rendered Markdown report at normal size.
 
 ## Risks and mitigations
 

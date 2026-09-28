@@ -2,7 +2,7 @@
 
 ## Objective
 
-Create a reusable Python command-line backtest that compares 11 complementary allocations of 480080 and 480081 across five fixed rebalance calendars. A single run evaluates all 55 combinations and writes a human-readable report and detailed machine-readable results. The initial strategy is periodic target-weight rebalancing; the design must let later strategies plug into the same backtest engine and metric pipeline.
+Create a reusable Python command-line backtest that compares 11 complementary allocations of 480080 and 480081 across five fixed rebalance calendars. A single run evaluates all 55 combinations and writes a readable Chinese report with charts plus detailed machine-readable results. The initial strategy is periodic target-weight rebalancing; the design must let later strategies plug into the same backtest engine and metric pipeline.
 
 The source index factsheets identify 480080 as 成长100R and 480081 as 价值100R. These are index series, not directly tradable securities. Their historical returns are therefore a proxy for a hypothetical portfolio, and fee assumptions do not represent a real product's costs.
 
@@ -16,7 +16,9 @@ The source index factsheets identify 480080 as 成长100R and 480081 as 价值10
 6. Apply transaction costs to portfolio turnover at initial investment and each rebalance. The cost model must distinguish buy and sell notional so one-way taxes are not charged on purchases. Expose rates and effective dates in JSON configuration; do not hard-code them in the backtest engine.
 7. Annualized return is geometric CAGR using elapsed calendar years (365.2425 days/year). Annualized volatility and Sharpe use daily portfolio returns and 252 trading days/year. The default annual risk-free rate is 0%, configurable in the run settings.
 8. Maximum drawdown is the most negative decline from a previous NAV peak. Maximum drawdown recovery time is the trading-day count from the peak preceding the maximum drawdown until NAV first regains that peak; if it is not recovered by the end of the data, report the elapsed trading days and an unrecovered status.
-9. A report compares all configurations and explains the input assumptions and formulas. It does not declare one portfolio universally “best,” because no single optimization objective was requested.
+9. The Chinese Markdown report puts a concise conclusion and key scenarios first, followed by charts and then assumptions/metric definitions. It does not reproduce the dense 55-row table; all 55 exact results remain in `metrics.csv`.
+10. Generate two self-contained SVG charts from the 55 result rows: (a) three heatmaps for annualized return, Sharpe ratio, and maximum drawdown across 11 weights × 5 periods; (b) a return-versus-maximum-drawdown scatter plot with periods distinguished and key scenarios annotated. Use descriptive Chinese titles/labels, clear units, and accessible SVG titles/descriptions.
+11. Summarize three data-selected scenarios in a compact table: highest annualized return, highest Sharpe ratio, and shallowest maximum drawdown. Label these as metric leaders, not recommendations, and keep all results discoverable in the CSV.
 
 ## Proposed project structure
 
@@ -30,7 +32,8 @@ src/asset_quant/
   strategies/periodic.py  # periodic target-weight strategy
   metrics/base.py         # metric contract and registry
   metrics/standard.py     # CAGR, volatility, drawdown, recovery, Sharpe
-  reporting/              # summary report and detailed CSV export
+  reporting/report.py     # concise Chinese summary and detailed CSV export
+  reporting/charts_svg.py # dependency-free SVG heatmap and risk-return chart generation
 config/portfolio_backtest.json
 outputs/                  # generated, untracked run output
 tests/                    # focused checks for calculations and input handling
@@ -42,7 +45,7 @@ The engine should consume a strategy through a small interface that supplies tar
 
 - Python 3.11 or newer.
 - `pandas` and `openpyxl` for the existing OOXML workbooks (two files have `.xls` suffixes despite OOXML contents); do not use a legacy binary `.xls` parser for these files.
-- Standard-library `argparse`, `dataclasses`/`Protocol`, `json`, `csv`, and `unittest` where useful. Avoid adding a dependency for metric formulas that are straightforward to calculate directly.
+- Standard-library `argparse`, `dataclasses`/`Protocol`, `json`, `csv`, and SVG/XML string generation for charts. Do not add a charting dependency for these two fixed chart types.
 
 ## Commands
 
@@ -63,8 +66,10 @@ The CLI must allow an alternate config path and output directory. It should fail
 
 ## Outputs
 
-- `report.md`: assumptions, data range, metric definitions, and a readable comparison of all 55 configurations.
+- `report.md`: concise Chinese findings, a three-row metric-leader summary, embedded charts, assumptions, and metric definitions.
 - `metrics.csv`: exactly 55 rows with allocation, rebalance schedule, cost assumptions, and all built-in metric values.
+- `performance_heatmaps.svg`: three heatmaps across the full weight/rebalance-period grid.
+- `risk_return.svg`: annualized return versus drawdown for all 55 configurations, with period colors and key scenarios annotated.
 - Keep generated files under `outputs/` in a run-specific directory; do not modify source workbooks.
 
 ## Code style
@@ -85,6 +90,8 @@ class Metric(Protocol):
 
 - Validate both source files independently, then verify the aligned series has unique increasing dates from 2012-12-31 through 2026-08-07 for the current data.
 - Verify one run emits exactly 55 metric rows, includes all 11 allocations and all five periods, and reports cost assumptions.
+- Verify the report is Chinese, starts with a concise conclusion/metric-leader table, links both charts, and does not contain the full 55-row data table.
+- Verify the heatmaps contain the complete 11×5 grid for each of the three metrics, the scatter includes all 55 cases, and the SVG includes accessible labels and valid escaping.
 - Check the no-rebalance/zero-cost path against a direct weighted daily-return calculation; check a rebalance boundary with a small hand-calculated example to catch lookahead and turnover errors.
 - Confirm commission/slippage apply to both buy and sell notional, stamp duty only to sell notional, and the stamp-duty rate changes on its configured effective date.
 - Spot-check the five built-in metrics independently and verify unrecovered drawdown duration is labeled correctly.
@@ -99,10 +106,11 @@ class Metric(Protocol):
 ## Success criteria
 
 1. The default CLI run reads the two repository source files and produces a report and a 55-row metrics file for the full common sample.
-2. All requested metrics are present with documented formulas and units, and an additional metric can be added through the metric registry without modifying the engine.
-3. A second strategy can use the engine through the strategy contract without changing the periodic strategy implementation.
-4. Cost, risk-free-rate, source-path, and output-path assumptions can be changed through configuration.
-5. Rebalance dates and costs are applied without lookahead; source files remain untouched.
+2. The report presents concise Chinese findings with readable charts for all 55 cases and a small metric-leader summary; detailed rows remain in CSV.
+3. All requested metrics are present with documented formulas and units, and an additional metric can be added through the metric registry without modifying the engine.
+4. A second strategy can use the engine through the strategy contract without changing the periodic strategy implementation.
+5. Cost, risk-free-rate, source-path, and output-path assumptions can be changed through configuration.
+6. Rebalance dates and costs are applied without lookahead; source files remain untouched.
 
 ## Sources
 

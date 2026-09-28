@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Add a reusable, modular backtest tool to compare portfolios made from indices 480080 and 480081, and produce a report that can be rerun as source data or assumptions change.
+Add a reusable, modular backtest tool to compare portfolios made from indices 480080 and 480081, and produce a readable Chinese report with charts that can be rerun as source data or assumptions change.
 
 ## User and purpose
 
@@ -16,6 +16,8 @@ The project owner wants to compare allocation weights and rebalance frequencies 
 - Include configurable assumptions for commission, slippage, and sell-side stamp duty. No real investment vehicle or fee schedule is specified, so costs are scenario estimates.
 - Use the common daily history in the existing 480080 and 480081 source files, currently 2012-12-31 through 2026-08-07.
 - Keep strategy logic, backtest execution, metric calculation, transaction-cost modeling, data loading, and report generation modular so future strategies can reuse the engine and add metrics.
+- Present the main findings and visual comparisons before methodology details; retain all 55 exact results in CSV instead of a dense 55-row table in the report.
+- Include charts that compare weight and rebalance-period effects across the full result grid.
 
 ## Success
 
