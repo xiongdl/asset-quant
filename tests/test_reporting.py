@@ -69,6 +69,7 @@ class ReportingTests(unittest.TestCase):
             self.assertIn("55", report)
             self.assertIn("does not select a universally best", report)
             self.assertIn("index", report.lower())
+            self.assertIn("population standard deviation", report)
 
     def test_missing_source_and_invalid_rate_have_actionable_errors(self):
         with tempfile.TemporaryDirectory() as directory:

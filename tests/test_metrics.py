@@ -24,7 +24,7 @@ class MetricTests(unittest.TestCase):
         )
         self.assertAlmostEqual(value, 1.21 ** (365.2425 / 365) - 1)
 
-    def test_volatility_and_sharpe_use_sample_daily_returns(self):
+    def test_volatility_and_sharpe_use_population_daily_returns(self):
         dates = [date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)]
         returns = [-0.1, 0.1, -0.1]
         nav = [0.9, 0.99, 0.891]

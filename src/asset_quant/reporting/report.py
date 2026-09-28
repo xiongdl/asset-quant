@@ -47,7 +47,7 @@ def write_report(
         "## Metric definitions",
         "",
         "- Annualized return: geometric CAGR over elapsed calendar years (365.2425 days per year), including initial buy costs relative to starting capital.",
-        "- Annualized volatility: sample standard deviation of close-to-close daily returns, multiplied by √252.",
+        "- Annualized volatility: population standard deviation of close-to-close daily returns, multiplied by √252.",
         "- Maximum drawdown: deepest decline from starting capital or a subsequent NAV peak.",
         "- Maximum drawdown recovery days: trading observations from the preceding peak until recovery; if unrecovered, elapsed observations through the final date.",
         "- Maximum drawdown recovered: whether NAV regained that peak within the sample.",
